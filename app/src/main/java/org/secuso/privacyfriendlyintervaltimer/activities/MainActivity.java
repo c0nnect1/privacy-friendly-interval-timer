@@ -14,6 +14,7 @@
 
 package org.secuso.privacyfriendlyintervaltimer.activities;
 
+import android.Manifest;
 import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.Context;
@@ -21,10 +22,18 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.preference.PreferenceActivity;
 import android.preference.PreferenceManager;
+import android.provider.Settings;
+
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.Button;
@@ -48,6 +57,9 @@ import java.text.SimpleDateFormat;
  * @version 20170809
  */
 public class MainActivity extends BaseActivity {
+
+    // Request code for the runtime notification permission
+    private static final int REQUEST_POST_NOTIFICATIONS = 1;
 
     // Constants for input
     private final String timeVerificationPattern = "[0-9]{1,2} ?: ?[0-9]{1,2}";
@@ -130,11 +142,17 @@ public class MainActivity extends BaseActivity {
             }
         });
 
+        //The workout notification is what keeps the timer running in the background
+        requestNotificationPermission();
+
         //Suggest the user to enter his body data
         prefManager = new PrefManager(this);
         if(prefManager.isFirstTimeLaunch()){
             prefManager.setFirstTimeLaunch(false);
             showPersonalizationAlert();
+        }
+        else {
+            showBatteryOptimizationAlert();
         }
     }
 
@@ -337,6 +355,88 @@ public class MainActivity extends BaseActivity {
         return alertBuilder.create();
     }
 
+    /**
+     * Ask for the notification permission. Without it the workout notification stays invisible,
+     * which leaves the user without any feedback while the timer runs in the background.
+     */
+    private void requestNotificationPermission(){
+        if(Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU){
+            return;
+        }
+
+        if(ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED){
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_POST_NOTIFICATIONS);
+        }
+    }
+
+
+    /**
+     * Offer to exclude the app from battery optimisation once. Android is free to stop the timer
+     * while the screen is off unless the app is exempt.
+     */
+    private void showBatteryOptimizationAlert(){
+        if(settings == null || isIgnoringBatteryOptimizations()){
+            return;
+        }
+
+        if(settings.getBoolean(getString(R.string.pref_battery_optimization_asked), false)){
+            return;
+        }
+
+        SharedPreferences.Editor editor = settings.edit();
+        editor.putBoolean(getString(R.string.pref_battery_optimization_asked), true);
+        editor.commit();
+
+        AlertDialog.Builder alertBuilder = new AlertDialog.Builder(this);
+        alertBuilder.setTitle(R.string.alert_battery_optimization_title);
+        alertBuilder.setMessage(R.string.alert_battery_optimization_message);
+
+        alertBuilder.setNegativeButton(getString(R.string.alert_battery_optimization_negative), new DialogInterface.OnClickListener() {
+            public void onClick(DialogInterface dialog, int id) {
+                dialog.dismiss();
+            }
+        });
+
+        alertBuilder.setPositiveButton(getString(R.string.alert_battery_optimization_positive), new DialogInterface.OnClickListener() {
+            public void onClick(DialogInterface dialog, int id) {
+                requestIgnoreBatteryOptimizations();
+            }
+        });
+
+        alertBuilder.create().show();
+    }
+
+
+    /**
+     * @return whether the app is already excluded from battery optimisation
+     */
+    private boolean isIgnoringBatteryOptimizations(){
+        PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+
+        return powerManager == null || powerManager.isIgnoringBatteryOptimizations(getPackageName());
+    }
+
+
+    /**
+     * Send the user to the battery optimisation exemption prompt, falling back to the settings
+     * list if the device does not offer the direct dialog.
+     */
+    private void requestIgnoreBatteryOptimizations(){
+        Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                .setData(Uri.parse("package:" + getPackageName()));
+
+        if(intent.resolveActivity(getPackageManager()) == null){
+            intent = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+        }
+
+        if(intent.resolveActivity(getPackageManager()) != null){
+            startActivity(intent);
+        }
+    }
+
+
     private void showPersonalizationAlert(){
         AlertDialog.Builder alertBuilder = new AlertDialog.Builder(this);
 
@@ -445,8 +545,11 @@ public class MainActivity extends BaseActivity {
 
     @Override
     public void onDestroy() {
-        timerService.setIsAppInBackground(false);
-        stopService(new Intent(this, TimerService.class));
+        //Leave a running workout alone, stopping the service would kill its timers
+        if (timerService != null && !timerService.isWorkoutRunning()) {
+            timerService.setIsAppInBackground(false);
+            stopService(new Intent(this, TimerService.class));
+        }
         super.onDestroy();
     }
 

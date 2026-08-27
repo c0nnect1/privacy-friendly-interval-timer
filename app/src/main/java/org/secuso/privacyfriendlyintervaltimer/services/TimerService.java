@@ -16,7 +16,10 @@ import android.os.Build;
 import android.os.CountDownTimer;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.preference.PreferenceManager;
+
+import android.content.pm.ServiceInfo;
 
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
@@ -91,6 +94,11 @@ public class TimerService extends Service {
     private NotificationManager notiManager = null;
     private boolean isAppInBackground = false;
 
+    //Keeps the service alive and the CPU awake for as long as a workout is running
+    private static final String WAKE_LOCK_TAG = "PrivacyFriendlyIntervalTimer::WorkoutTimer";
+    private PowerManager.WakeLock wakeLock = null;
+    private boolean isWorkoutRunning = false;
+
     //Database for the statistics
     private PFASQLiteHelper database = null;
     private WorkoutSessionData statistics = null;
@@ -149,6 +157,7 @@ public class TimerService extends Service {
             restTimer.cancel();
         }
         saveStatistics();
+        releaseWakeLock();
         unregisterReceiver(notificationReceiver);
         super.onDestroy();
     }
@@ -241,6 +250,7 @@ public class TimerService extends Service {
                 else {
                     currentTitle = getResources().getString(R.string.workout_headline_done);
                     updateNotification(0);
+                    workoutCompleted();
                     broadcast = new Intent(COUNTDOWN_BROADCAST)
                         .putExtra("timer_title", currentTitle)
                         .putExtra("workout_finished", true);
@@ -354,7 +364,6 @@ public class TimerService extends Service {
         this.workoutTimer = createWorkoutTimer(this.workoutTime);
         this.restTimer = createRestTimer(this.startTime);
 
-
         //Use rest timer as a start timer before the workout begins
         if(startTime != 0){
             this.savedTime = this.restTime;
@@ -370,6 +379,12 @@ public class TimerService extends Service {
 
             this.workoutTimer.start();
         }
+
+        //Keep the service and the CPU alive so the countdown continues while the screen is
+        //locked or the user switches to another app
+        this.isWorkoutRunning = true;
+        acquireWakeLock();
+        startForegroundNotification();
     }
 
 
@@ -671,13 +686,75 @@ public class TimerService extends Service {
      * @param time The current timer value
      */
     private void updateNotification(int time) {
-        if(isAppInBackground) {
+        if(isWorkoutRunning || isAppInBackground) {
             Notification notification = buildNotification(time);
             notiManager.notify(NOTIFICATION_ID, notification);
         }
         else if(notiManager != null) {
             notiManager.cancel(NOTIFICATION_ID);
         }
+    }
+
+
+    /**
+     * Promote the service to a foreground service. Android only keeps counting down reliably
+     * while the screen is off or another app is in the foreground if the process hosting the
+     * timer is a foreground service - a plain background service gets frozen within seconds.
+     */
+    private void startForegroundNotification() {
+        int time = (int) Math.ceil(savedTime / 1000.0);
+        int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+                ? ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                : 0;
+
+        ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(time), type);
+    }
+
+
+    /**
+     * The last set is over. Give up the wake lock and the foreground state, but leave the
+     * "workout done" notification in place for the user to see.
+     */
+    private void workoutCompleted() {
+        this.isWorkoutRunning = false;
+        releaseWakeLock();
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH);
+    }
+
+
+    /**
+     * Acquire a partial wake lock. The foreground service keeps the process alive, but without a
+     * wake lock the CPU still suspends once the screen goes off, which stalls the countdown and
+     * the audio cues until the device happens to wake up again.
+     */
+    private void acquireWakeLock() {
+        if(wakeLock != null && wakeLock.isHeld()) {
+            return;
+        }
+
+        PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        if(powerManager == null) {
+            return;
+        }
+
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG);
+        wakeLock.setReferenceCounted(false);
+
+        //Safety net so a lost workout can never hold the CPU awake indefinitely
+        long timeout = startTime + (workoutTime + restTime) * Math.max(sets, 1)
+                + blockPeriodizationTime * Math.max(sets, 1) + 60 * 1000;
+        wakeLock.acquire(timeout);
+    }
+
+
+    /**
+     * Release the wake lock held for the duration of a workout.
+     */
+    private void releaseWakeLock() {
+        if(wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
+        wakeLock = null;
     }
 
     /**
@@ -705,7 +782,12 @@ public class TimerService extends Service {
      */
     public void workoutClosed(){
         this.isAppInBackground = false;
-        notiManager.cancel(NOTIFICATION_ID);
+
+        //A running workout keeps its foreground notification, otherwise the service would be
+        //killed as soon as the workout view is destroyed
+        if(!isWorkoutRunning) {
+            notiManager.cancel(NOTIFICATION_ID);
+        }
     }
 
     /**
@@ -715,6 +797,9 @@ public class TimerService extends Service {
      */
     public void cleanTimerFinish() {
         this.isAppInBackground = false;
+        this.isWorkoutRunning = false;
+        releaseWakeLock();
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
         if (workoutTimer != null) {
             this.workoutTimer.cancel();
         }
@@ -824,6 +909,10 @@ public class TimerService extends Service {
 
     public boolean getIsWorkout(){
         return  this.isWorkout;
+    }
+
+    public boolean isWorkoutRunning(){
+        return this.isWorkoutRunning;
     }
 
     public long getStartTime(){

@@ -17,6 +17,13 @@
 
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
+    <!-- The workout timer runs as a foreground service holding a wake lock, so that it keeps
+         counting down while the screen is locked or the user is in another app. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -89,7 +96,12 @@
         <service
             android:name="org.secuso.privacyfriendlyintervaltimer.services.TimerService"
             android:enabled="true"
-            android:exported="true" />
+            android:exported="true"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="An interval training timer that has to keep counting down and playing its audio cues while the screen is off or the user is in another app." />
+        </service>
 
         <receiver android:name="org.secuso.privacyfriendlyintervaltimer.receivers.OnBootCompletedBroadcastReceiver"
             android:exported="true">
