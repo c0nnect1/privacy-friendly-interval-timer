@@ -217,6 +217,9 @@ public class MainActivity extends BaseActivity {
 
                 // Start the workout if there were no problems
                 if (!parseFail) {
+                    // Remember the chosen setup as the default for the next launch
+                    saveTimerValues();
+
                     if (isStartTimerEnabled(this)) {
                         timerService.startWorkout(workoutTime, restTime, startTime, sets,
                                 isBlockPeriodization, blockPeriodizationTime, blockPeriodizationSets);
@@ -381,6 +384,42 @@ public class MainActivity extends BaseActivity {
     }
 
 
+    /**
+     * Stores the currently chosen timer setup so it becomes the default on the next launch.
+     */
+    private void saveTimerValues(){
+        if(settings == null) { return; }
+
+        SharedPreferences.Editor editor = this.settings.edit();
+        editor.putInt(this.getString(R.string.pref_timer_workout), (int) this.workoutTime);
+        editor.putInt(this.getString(R.string.pref_timer_rest), (int) this.restTime);
+        editor.putInt(this.getString(R.string.pref_timer_set), this.sets);
+        editor.commit();
+    }
+
+
+    /**
+     * Reads the values currently entered in the GUI into the timer fields.
+     * Fields that cannot be parsed keep their previous value.
+     */
+    private void readTimerValuesFromGui(){
+        String workoutValue = this.workoutIntervalText.getText().toString();
+        if(workoutValue.matches(timeVerificationPattern)) {
+            try { this.workoutTime = parseTime(workoutValue); } catch (NumberFormatException e) { /* keep old value */ }
+        }
+
+        String restValue = this.restIntervalText.getText().toString();
+        if(restValue.matches(timeVerificationPattern)) {
+            try { this.restTime = parseTime(restValue); } catch (NumberFormatException e) { /* keep old value */ }
+        }
+
+        String setsValue = this.setsText.getText().toString();
+        if(!setsValue.isEmpty() && setsValue.matches(setsVerificationPattern)) {
+            try { this.sets = Integer.parseInt(setsValue); } catch (NumberFormatException e) { /* keep old value */ }
+        }
+    }
+
+
     @Override
     protected void onStart() {
         super.onStart();
@@ -392,6 +431,11 @@ public class MainActivity extends BaseActivity {
     @Override
     protected void onStop() {
         super.onStop();
+
+        // Remember the entered setup even if the workout was not started
+        readTimerValuesFromGui();
+        saveTimerValues();
+
         // Unbind from the service
         if (serviceBound) {
             unbindService(serviceConnection);
